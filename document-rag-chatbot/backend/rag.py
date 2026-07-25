@@ -110,19 +110,32 @@ def process_document(file_bytes: bytes, filename: str) -> VectorStore:
     return store
 
 
-def retrieve_context(store: VectorStore, query: str) -> Tuple[str, List[str]]:
+def retrieve_context(question, vectorstore):
     """
-    Retrieve top-k chunks for a query.
-    Returns (formatted_context_string, list_of_source_labels).
-    """
-    results = store.search(query)
-    context_parts = []
-    sources       = []
+    Retrieves the most relevant chunks from the vector store.
 
-    for i, chunk in enumerate(results, start=1):
-        context_parts.append(f"[Chunk {i} — {chunk['source']}]\n{chunk['text']}")
-        sources.append(chunk["source"])
+    Returns:
+        context (str)
+        sources (list)
+    """
+
+    docs = vectorstore.search(question, top_k=TOP_K)
+
+    context_parts = []
+    sources = []
+
+    for doc in docs:
+
+        context_parts.append(doc["text"])
+
+        if doc["source"] not in sources:
+            sources.append(doc["source"])
 
     context = "\n\n".join(context_parts)
-    unique_sources = list(dict.fromkeys(sources))   # deduplicated, order preserved
-    return context, unique_sources
+
+    MAX_CONTEXT = 12000
+
+    if len(context) > MAX_CONTEXT:
+        context = context[:MAX_CONTEXT]
+
+    return context, sources

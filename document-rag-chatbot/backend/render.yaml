@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: altrumind
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false   # you'll be prompted to paste this in the Render dashboard
