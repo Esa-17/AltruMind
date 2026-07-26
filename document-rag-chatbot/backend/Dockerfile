@@ -12,7 +12,6 @@ RUN pip install --no-cache-dir --upgrade pip \
 # Without this, the first request after every cold start would pay
 # the model-download cost. Baking it into the image keeps cold starts
 # fast on free-tier hosts like Render.
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
 # --- Copy application code ---
 COPY backend backend
