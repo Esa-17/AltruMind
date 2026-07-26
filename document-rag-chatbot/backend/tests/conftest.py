@@ -4,8 +4,9 @@ conftest.py
 Stubs out heavy or network-touching dependencies BEFORE any test module
 imports rag.py / gemini.py, so the test suite:
 
-  - never downloads the sentence-transformers model
-  - never builds a real FAISS index
+  - never makes a real embedding API call (rag.py's embeddings now come
+    from the Gemini API, not a local torch model)
+  - never builds a real FAISS index against real vectors
   - never requires the google-genai package to actually be installed
   - never needs a real GEMINI_API_KEY / network access
 
@@ -47,24 +48,6 @@ if "faiss" not in sys.modules:
     sys.modules["faiss"] = faiss_stub
 
 # ---------------------------------------------------------------------
-# Stub: sentence_transformers
-# ---------------------------------------------------------------------
-if "sentence_transformers" not in sys.modules:
-    st_stub = types.ModuleType("sentence_transformers")
-
-    class _FakeSentenceTransformer:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def encode(self, texts, show_progress_bar=False):
-            if isinstance(texts, str):
-                texts = [texts]
-            return np.zeros((len(texts), 384), dtype="float32")
-
-    st_stub.SentenceTransformer = _FakeSentenceTransformer
-    sys.modules["sentence_transformers"] = st_stub
-
-# ---------------------------------------------------------------------
 # Stub: google.genai (only if the real package isn't installed)
 # ---------------------------------------------------------------------
 try:
@@ -104,6 +87,20 @@ except ImportError:
             for k, v in kwargs.items():
                 setattr(self, k, v)
 
+    class _FakeEmbedContentConfig:
+        def __init__(self, output_dimensionality=None, **kwargs):
+            self.output_dimensionality = output_dimensionality
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    class _FakeContentEmbedding:
+        def __init__(self, values):
+            self.values = values
+
+    class _FakeEmbedContentResponse:
+        def __init__(self, embeddings):
+            self.embeddings = embeddings
+
     class _APIError(Exception):
         def __init__(self, message="", code=None):
             super().__init__(message)
@@ -114,6 +111,15 @@ except ImportError:
         def generate_content_stream(self, model=None, contents=None, config=None):
             return []
 
+        def embed_content(self, model=None, contents=None, config=None):
+            # Deterministic fake vectors sized to the requested dimensionality
+            # (or 768 by default), so tests never make a real network call.
+            dim = getattr(config, "output_dimensionality", None) or 768
+            n = len(contents) if isinstance(contents, list) else 1
+            return _FakeEmbedContentResponse(
+                embeddings=[_FakeContentEmbedding([0.0] * dim) for _ in range(n)]
+            )
+
     class _FakeClient:
         def __init__(self, api_key=None):
             self.api_key = api_key
@@ -122,6 +128,7 @@ except ImportError:
     types_stub.Part = _FakePart
     types_stub.Content = _FakeContent
     types_stub.GenerateContentConfig = _FakeGenerateContentConfig
+    types_stub.EmbedContentConfig = _FakeEmbedContentConfig
     errors_stub.APIError = _APIError
     genai_stub.Client = _FakeClient
     genai_stub.types = types_stub

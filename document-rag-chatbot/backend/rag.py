@@ -1,18 +1,71 @@
 import os
 import io
+from pathlib import Path
+from typing import List, Tuple
+
 import faiss
 import numpy as np
-from typing import List, Tuple
-from sentence_transformers import SentenceTransformer
 import pdfplumber
 import docx
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 
-# ── Embedding model (runs locally, free) ──────────────────────────────────────
-EMBED_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
-EMBED_DIM   = 384
-CHUNK_SIZE  = 500   # characters per chunk
+# Load .env (mirrors gemini.py's setup so this module works standalone too)
+load_dotenv(Path(__file__).parent / ".env")
+
+API_KEY = os.getenv("GEMINI_API_KEY")
+if not API_KEY:
+    raise ValueError("GEMINI_API_KEY not found in .env")
+
+# ── Embeddings via the Gemini API (no local model, no torch) ──────────────────
+# NOTE: this project originally used sentence-transformers ("all-MiniLM-L6-v2")
+# for local, free, offline embeddings. That pulls in PyTorch at import time —
+# roughly 300-500MB before the server has even started — which reliably OOM'd
+# on Render's free tier (512MB total). Switching to Gemini's embedding API
+# removes that dependency entirely: no torch, no local model weights, just a
+# lightweight HTTP call using the same client/key already used for chat.
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=API_KEY)
+    return _client
+
+
+EMBED_MODEL_NAME = "gemini-embedding-001"
+EMBED_DIM = 768   # requested via output_dimensionality below
+CHUNK_SIZE = 500   # characters per chunk
 CHUNK_OVERLAP = 100 # overlap between chunks for context continuity
-TOP_K       = 5     # number of chunks to retrieve per query
+TOP_K = 5     # number of chunks to retrieve per query
+
+EMBED_BATCH_SIZE = 100  # keep individual API requests a reasonable size
+
+
+def _embed_texts(texts: List[str]) -> np.ndarray:
+    """
+    Embeds a list of texts via the Gemini embedding API.
+    Returns an (n, EMBED_DIM) float32 array, batching requests so a
+    large document doesn't get sent as one oversized call.
+    """
+    if not texts:
+        return np.zeros((0, EMBED_DIM), dtype="float32")
+
+    client = _get_client()
+    all_vectors: List[List[float]] = []
+
+    for i in range(0, len(texts), EMBED_BATCH_SIZE):
+        batch = texts[i:i + EMBED_BATCH_SIZE]
+        response = client.models.embed_content(
+            model=EMBED_MODEL_NAME,
+            contents=batch,
+            config=types.EmbedContentConfig(output_dimensionality=EMBED_DIM),
+        )
+        all_vectors.extend(e.values for e in response.embeddings)
+
+    return np.array(all_vectors, dtype="float32")
 
 
 # ── Document parsing ──────────────────────────────────────────────────────────
@@ -70,14 +123,12 @@ class VectorStore:
 
     def add_chunks(self, chunks: List[dict]):
         texts = [c["text"] for c in chunks]
-        embeddings = EMBED_MODEL.encode(texts, show_progress_bar=False)
-        embeddings = np.array(embeddings, dtype="float32")
+        embeddings = _embed_texts(texts)
         self.index.add(embeddings)
         self.chunks.extend(chunks)
 
     def search(self, query: str, top_k: int = TOP_K) -> List[dict]:
-        query_vec = EMBED_MODEL.encode([query])
-        query_vec = np.array(query_vec, dtype="float32")
+        query_vec = _embed_texts([query])
         distances, indices = self.index.search(query_vec, top_k)
         results = []
         for idx, dist in zip(indices[0], distances[0]):

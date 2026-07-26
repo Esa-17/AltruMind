@@ -1,9 +1,11 @@
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from rag import chunk_text, CHUNK_SIZE, CHUNK_OVERLAP  # noqa: E402
+import rag  # noqa: E402
+from rag import chunk_text, CHUNK_SIZE, CHUNK_OVERLAP, VectorStore, EMBED_DIM  # noqa: E402
 
 
 def test_chunk_text_empty_page_produces_no_chunks():
@@ -40,3 +42,46 @@ def test_chunk_text_preserves_multiple_pages_independently():
     chunks = chunk_text(pages)
     pages_seen = {c["page"] for c in chunks}
     assert pages_seen == {1, 2}
+
+
+# ---------------------------------------------------------------------
+# VectorStore — embeds via the Gemini API (mocked here, no real network
+# call). This is the path that used to call a local sentence-transformers
+# model; these tests confirm the swap didn't break add/search behavior.
+# ---------------------------------------------------------------------
+
+def test_vectorstore_add_and_search_roundtrip():
+    store = VectorStore()
+    chunks = [
+        {"text": "Freelancers lose money on late invoices.", "page": 1, "source": "Page 1"},
+        {"text": "Our pricing is nine dollars a month.", "page": 2, "source": "Page 2"},
+    ]
+
+    with patch.object(rag, "_get_client") as mock_get_client:
+        mock_client = mock_get_client.return_value
+        mock_client.models.embed_content.return_value = type(
+            "R", (), {"embeddings": [
+                type("E", (), {"values": [0.1] * EMBED_DIM})(),
+                type("E", (), {"values": [0.2] * EMBED_DIM})(),
+            ]}
+        )()
+        store.add_chunks(chunks)
+
+    assert store.index.ntotal == 2
+    assert not store.is_empty()
+
+    with patch.object(rag, "_get_client") as mock_get_client:
+        mock_client = mock_get_client.return_value
+        mock_client.models.embed_content.return_value = type(
+            "R", (), {"embeddings": [type("E", (), {"values": [0.1] * EMBED_DIM})()]}
+        )()
+        results = store.search("late invoices", top_k=2)
+
+    assert len(results) <= 2
+    for r in results:
+        assert "score" in r
+
+
+def test_embed_texts_returns_empty_array_for_empty_input():
+    result = rag._embed_texts([])
+    assert result.shape == (0, EMBED_DIM)

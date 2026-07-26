@@ -8,11 +8,6 @@ COPY backend/requirements.txt backend/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r backend/requirements.txt
 
-# --- Pre-download the local embedding model at build time ---
-# Without this, the first request after every cold start would pay
-# the model-download cost. Baking it into the image keeps cold starts
-# fast on free-tier hosts like Render.
-
 # --- Copy application code ---
 COPY backend backend
 COPY frontend frontend
